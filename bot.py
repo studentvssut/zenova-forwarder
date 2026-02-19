@@ -1,65 +1,62 @@
 import asyncio
 import os
-import time
 from datetime import datetime
 
 from telethon import TelegramClient, errors
 from supabase import create_client, Client
 
 # ======================================================
-# ENV (SAFE MODE)
-# ======================================================
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
-supabase: Client | None = None
-
-if SUPABASE_URL and SUPABASE_KEY:
-    try:
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✅ Supabase client initialized", flush=True)
-    except Exception as e:
-        print("❌ Supabase init failed:", e, flush=True)
-else:
-    print("⚠️ Supabase env vars missing. Running in WAIT mode.", flush=True)
-
-# ======================================================
 # GLOBALS
 # ======================================================
+supabase: Client | None = None
 clients = []
 account_index = 0
 
 
 # ======================================================
-# SUPABASE HELPERS (SAFE)
+# SUPABASE INIT (FIX)
 # ======================================================
+def init_supabase():
+    global supabase
+
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+
+    if not url or not key:
+        supabase = None
+        return False
+
+    try:
+        supabase = create_client(url, key)
+        return True
+    except Exception as e:
+        print("❌ Supabase init failed:", e, flush=True)
+        supabase = None
+        return False
+
+
 def sb_available():
     return supabase is not None
 
 
+# ======================================================
+# SUPABASE HELPERS
+# ======================================================
 def get_settings():
-    if not sb_available():
-        return None
     return supabase.table("settings").select("*").eq("id", 1).single().execute().data
 
 
 def get_accounts():
-    if not sb_available():
-        return []
     res = supabase.table("accounts").select("*").order("account_number").execute().data
     return [a for a in res if a.get("api_id") and a.get("api_hash") and a.get("phone")]
 
 
 def get_groups():
-    if not sb_available():
-        return []
     res = supabase.table("groups").select("*").order("group_number").execute().data
     return [g["group_name"] for g in res if g.get("group_name")]
 
 
 def update_stats(rounds, success, failed):
-    if not sb_available():
-        return
     supabase.table("stats").update({
         "total_rounds": rounds,
         "total_success": success,
@@ -69,8 +66,6 @@ def update_stats(rounds, success, failed):
 
 
 def write_log(round_num, group, acc_num, status, message):
-    if not sb_available():
-        return
     supabase.table("logs").insert({
         "round_number": round_num,
         "group_name": group,
@@ -139,29 +134,26 @@ async def forward_round(round_num, groups, source, message_id, stats):
 
 
 # ======================================================
-# MAIN LOOP (NEVER DIES)
+# MAIN LOOP (RECOVERABLE)
 # ======================================================
 async def main():
     print("🚀 Zenova Forwarder Worker started", flush=True)
 
     while True:
         try:
-            if not sb_available():
-                print("⏳ Waiting for valid Supabase env vars...", flush=True)
-                await asyncio.sleep(15)
+            if not init_supabase():
+                print("⏳ Waiting for Supabase env vars...", flush=True)
+                await asyncio.sleep(10)
                 continue
+
+            print("✅ Supabase connected", flush=True)
 
             settings = get_settings()
             accounts = get_accounts()
             groups = get_groups()
 
-            if not settings:
-                print("⚠️ Settings row missing (id=1)", flush=True)
-                await asyncio.sleep(10)
-                continue
-
-            if not accounts or not groups:
-                print("⚠️ Waiting for accounts / groups...", flush=True)
+            if not settings or not accounts or not groups:
+                print("⚠️ Waiting for DB configuration...", flush=True)
                 await asyncio.sleep(10)
                 continue
 
@@ -178,7 +170,7 @@ async def main():
 
             while True:
                 fresh = get_settings()
-                if fresh and not fresh.get("is_running", True):
+                if not fresh.get("is_running", True):
                     print("⏸ Paused from dashboard", flush=True)
                     await asyncio.sleep(5)
                     continue
@@ -188,7 +180,7 @@ async def main():
                 await asyncio.sleep(interval)
 
         except Exception as e:
-            print("🔥 Worker error (safe restart):", e, flush=True)
+            print("🔥 Worker error, restarting safely:", e, flush=True)
             await asyncio.sleep(5)
 
 
