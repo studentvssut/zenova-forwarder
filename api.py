@@ -27,7 +27,9 @@ clients = {}
 async def send_otp(data: SendOTPRequest):
     phone = data.phone
 
-    client = TelegramClient(f"sessions/{phone}", API_ID, API_HASH)
+    # ✅ FIX: Railway-safe session path
+    client = TelegramClient(f"/tmp/session_{phone}", API_ID, API_HASH)
+
     await client.connect()
     await client.send_code_request(phone)
 
@@ -47,4 +49,6 @@ async def verify_otp(data: VerifyOTPRequest):
         return {"error": "OTP not requested"}
 
     await client.sign_in(phone, code)
+    await client.disconnect()  # ✅ cleanup
+
     return {"status": "logged_in"}
